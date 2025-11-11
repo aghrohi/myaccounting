@@ -1,406 +1,402 @@
 <?php
-// Start the session at the very beginning
-session_start();
+/**
+ * Enhanced PHP Accounting Application
+ * Version 2.0 - Main Controller
+ * * This file handles routing, authentication, and page rendering
+ */
 
-// Security headers
-header("X-Content-Type-Options: nosniff");
-header("X-Frame-Options: DENY");
-header("X-XSS-Protection: 1; mode=block");
+// Start session with secure configuration
+session_start([
+    'cookie_lifetime' => 86400,
+    'cookie_secure' => isset($_SERVER['HTTPS']),
+    'cookie_httponly' => true,
+    'cookie_samesite' => 'Strict'
+]);
 
-// Include the database connection
-require 'db_connect.php';
+// Include database connection
+require_once 'db_connect.php';
 
-// --- Global Data Fetching ---
-$accounts = [];
-$categories = [];
-$users = [];
-$account_holders = [];
-$currencies = [];
+// Include helper functions
+require_once 'functions.php';
 
-// Fetch data ONLY if the user is logged in
-if (isset($_SESSION['user_id'])) {
-    try {
-        $accounts = $pdo->query("SELECT a.*, ah.holder_name, c.currency_code 
-                                FROM accounts a 
-                                LEFT JOIN account_holders ah ON a.holder_id = ah.holder_id
-                                LEFT JOIN currencies c ON a.currency_id = c.currency_id
-                                ORDER BY a.account_name")->fetchAll();
-        $categories = $pdo->query("SELECT category_id, category_name, category_type FROM categories ORDER BY category_type, category_name")->fetchAll();
-        $users = $pdo->query("SELECT user_id, username, is_admin FROM users ORDER BY username")->fetchAll();
-        $account_holders = $pdo->query("SELECT holder_id, holder_name FROM account_holders ORDER BY holder_name")->fetchAll();
-        $currencies = $pdo->query("SELECT currency_id, currency_code, currency_name FROM currencies ORDER BY currency_code")->fetchAll();
-    } catch (PDOException $e) {
-        $error = "Error fetching data: " . $e->getMessage();
-    }
-}
-
-// --- Simple Router ---
+// Initialize variables
 $page = $_GET['page'] ?? 'login';
-if (isset($_SESSION['user_id']) && $page === 'login') {
-    $page = 'dashboard';
+$message = $_SESSION['message'] ?? '';
+$error = $_SESSION['error'] ?? '';
+$success = $_SESSION['success'] ?? '';
+
+// Clear session messages after displaying
+unset($_SESSION['message'], $_SESSION['error'], $_SESSION['success']);
+
+// Authentication check
+$is_logged_in = isset($_SESSION['user_id']);
+$is_admin = $_SESSION['is_admin'] ?? false;
+
+// Redirect to login if not authenticated
+if (!$is_logged_in && $page !== 'login') {
+    header('Location: index.php?page=login');
+    exit;
 }
 
-// --- Action Handler (POST requests) ---
-$message = '';
-$error = '';
-try {
-    if ($_SERVER["REQUEST_METHOD"] == "POST") {
-        $action = $_POST['action'] ?? '';
-
-        switch ($action) {
-            case 'login':
-                $username = trim($_POST['username'] ?? '');
-                $password = $_POST['password'] ?? '';
-
-                if (empty($username) || empty($password)) {
-                    $error = "Please enter both username and password.";
-                } else {
-                    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
-                    $stmt->execute([$username]);
-                    $user = $stmt->fetch();
-
-                    if ($user && password_verify($password, $user['password_hash'])) {
-                        // Password is correct!
-                        $_SESSION['user_id'] = $user['user_id'];
-                        $_SESSION['username'] = $user['username'];
-                        $_SESSION['is_admin'] = $user['is_admin'];
-                        header("Location: index.php?page=dashboard");
-                        exit;
-                    } else {
-                        $error = "Invalid username or password.";
-                    }
-                }
-                $page = 'login';
-                break;
-
-            case 'add_user':
-                if ($_SESSION['is_admin']) {
-                    $username = trim($_POST['username'] ?? '');
-                    $password = $_POST['password'] ?? '';
-                    $is_admin = isset($_POST['is_admin']) ? 1 : 0;
-                    
-                    if (strlen($password) < 6) {
-                        $error = "Password must be at least 6 characters long.";
-                    } else {
-                        $hash = password_hash($password, PASSWORD_DEFAULT);
-                        
-                        $stmt = $pdo->prepare("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)");
-                        $stmt->execute([$username, $hash, $is_admin]);
-                        $message = "User '$username' created successfully.";
-                    }
-                    $page = 'setup_users';
-                }
-                break;
-
-            case 'add_currency':
-                if ($_SESSION['is_admin']) {
-                    $stmt = $pdo->prepare("INSERT INTO currencies (currency_code, currency_name) VALUES (?, ?)");
-                    $stmt->execute([
-                        strtoupper(trim($_POST['currency_code'] ?? '')),
-                        trim($_POST['currency_name'] ?? '')
-                    ]);
-                    $message = "Currency added successfully.";
-                    $page = 'setup_currency';
-                    
-                    // Refresh currencies list
-                    $currencies = $pdo->query("SELECT currency_id, currency_code, currency_name FROM currencies ORDER BY currency_code")->fetchAll();
-                }
-                break;
-
-            case 'add_holder':
-                if ($_SESSION['is_admin']) {
-                    $stmt = $pdo->prepare("INSERT INTO account_holders (holder_name) VALUES (?)");
-                    $stmt->execute([trim($_POST['holder_name'] ?? '')]);
-                    $message = "Account holder added successfully.";
-                    $page = 'setup_holders';
-                    
-                    // Refresh holders list
-                    $account_holders = $pdo->query("SELECT holder_id, holder_name FROM account_holders ORDER BY holder_name")->fetchAll();
-                }
-                break;
-
-            case 'add_account':
-                $stmt = $pdo->prepare("INSERT INTO accounts (account_name, holder_id, account_details, starting_balance, creation_date, currency_id) VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->execute([
-                    trim($_POST['account_name'] ?? ''),
-                    $_POST['holder_id'],
-                    trim($_POST['details'] ?? ''),
-                    $_POST['starting_amount'] ?? 0,
-                    $_POST['creation_date'],
-                    $_POST['currency_id']
-                ]);
-                $message = "Account created successfully.";
-                $page = 'accounts';
-                
-                // Refresh accounts list
-                $accounts = $pdo->query("SELECT a.*, ah.holder_name, c.currency_code 
-                                        FROM accounts a 
-                                        LEFT JOIN account_holders ah ON a.holder_id = ah.holder_id
-                                        LEFT JOIN currencies c ON a.currency_id = c.currency_id
-                                        ORDER BY a.account_name")->fetchAll();
-                break;
-
-            case 'add_category':
-                $stmt = $pdo->prepare("INSERT INTO categories (category_name, category_type) VALUES (?, ?)");
-                $stmt->execute([
-                    trim($_POST['category_name'] ?? ''),
-                    $_POST['category_type']
-                ]);
-                $message = "Category created successfully.";
-                $page = 'categories';
-                
-                // Refresh categories list
-                $categories = $pdo->query("SELECT category_id, category_name, category_type FROM categories ORDER BY category_type, category_name")->fetchAll();
-                break;
-
-            case 'add_transaction':
-                $source = $_POST['source_account_id'] ?? '0';
-                $dest = $_POST['dest_account_id'] ?? '0';
-                
-                // Validation: Can't have both source and dest as external
-                if ($source == '0' && $dest == '0') {
-                    $error = "A transaction must have at least one account (source or destination).";
-                } else if ($source == $dest && $source != '0') {
-                    $error = "Source and destination accounts cannot be the same.";
-                } else {
-                    $stmt = $pdo->prepare("INSERT INTO transactions (source_account_id, dest_account_id, category_id, user_id, transaction_date, amount, details) VALUES (NULLIF(?, '0'), NULLIF(?, '0'), ?, ?, ?, ?, ?)");
-                    $stmt->execute([
-                        $source,
-                        $dest,
-                        $_POST['category_id'],
-                        $_SESSION['user_id'],
-                        $_POST['transaction_date'],
-                        abs($_POST['amount']), // Ensure positive amount
-                        trim($_POST['details'] ?? '')
-                    ]);
-                    $message = "Transaction added successfully.";
-                }
-                $page = 'transactions';
-                break;
-
-            case 'delete_transaction':
-                if (isset($_POST['transaction_id'])) {
-                    $stmt = $pdo->prepare("DELETE FROM transactions WHERE transaction_id = ?");
-                    $stmt->execute([$_POST['transaction_id']]);
-                    $message = "Transaction deleted successfully.";
-                }
-                $page = 'transactions';
-                break;
-
-            case 'delete_account':
-                if ($_SESSION['is_admin'] && isset($_POST['account_id'])) {
-                    // Check if account has transactions
-                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM transactions WHERE source_account_id = ? OR dest_account_id = ?");
-                    $stmt->execute([$_POST['account_id'], $_POST['account_id']]);
-                    $count = $stmt->fetchColumn();
-                    
-                    if ($count > 0) {
-                        $error = "Cannot delete account with existing transactions.";
-                    } else {
-                        $stmt = $pdo->prepare("DELETE FROM accounts WHERE account_id = ?");
-                        $stmt->execute([$_POST['account_id']]);
-                        $message = "Account deleted successfully.";
-                    }
-                }
-                $page = 'accounts';
-                break;
-        }
-    }
-} catch (PDOException $e) {
-    $error = "Database error: " . $e->getMessage();
+// Redirect to dashboard if already logged in and trying to access login
+if ($is_logged_in && $page === 'login') {
+    header('Location: index.php?page=dashboard');
+    exit;
 }
 
-// --- Logout Action ---
+// Handle logout
 if ($page === 'logout') {
-    session_unset();
     session_destroy();
-    header("Location: index.php?page=login");
+    header('Location: index.php?page=login');
     exit;
 }
 
-// --- Security Check ---
-if (!isset($_SESSION['user_id']) && $page !== 'login') {
-    header("Location: index.php?page=login");
+// Load user data if logged in
+$current_user = null;
+if ($is_logged_in) {
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE user_id = ?");
+    $stmt->execute([$_SESSION['user_id']]);
+    $current_user = $stmt->fetch();
+    
+    // Update last login
+    if ($current_user && !isset($_SESSION['last_login_updated'])) {
+        $stmt = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE user_id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $_SESSION['last_login_updated'] = true;
+    }
+}
+
+// Define allowed pages based on user role
+// MODIFICATION: Added 'reconcile' to allowed pages for AJAX
+$public_pages = ['login'];
+$user_pages = ['dashboard', 'transactions', 'accounts', 'categories', 'reports', 'profile', 'reconcile'];
+$admin_pages = ['users', 'currencies', 'holders', 'audit', 'settings'];
+
+// Combine allowed pages
+$allowed_pages = $public_pages;
+if ($is_logged_in) {
+    $allowed_pages = array_merge($allowed_pages, $user_pages);
+    if ($is_admin) {
+        $allowed_pages = array_merge($allowed_pages, $admin_pages);
+    }
+}
+
+// Validate page request
+if (!in_array($page, $allowed_pages)) {
+    $page = '404';
+}
+
+// Handle AJAX requests
+if (isset($_GET['ajax']) && $_GET['ajax'] === '1') {
+    header('Content-Type: application/json');
+    
+    // --- MODIFICATION: Added AJAX Reconcile Handler ---
+    if ($page === 'reconcile') {
+        if (!$is_logged_in) {
+            echo json_encode(['success' => false, 'error' => 'Not authenticated']);
+            exit;
+        }
+        try {
+            $id = $_POST['id'] ?? 0;
+            // Toggle the is_reconciled flag and set/unset the reconciled_date
+            $stmt = $pdo->prepare("
+                UPDATE transactions 
+                SET 
+                    is_reconciled = NOT is_reconciled, 
+                    reconciled_date = IF(is_reconciled = 1, NULL, NOW()) 
+                WHERE transaction_id = ?
+            ");
+            $stmt->execute([$id]);
+            
+            // Get the new status
+            $stmt = $pdo->prepare("SELECT is_reconciled FROM transactions WHERE transaction_id = ?");
+            $stmt->execute([$id]);
+            $new_status = $stmt->fetchColumn();
+            
+            echo json_encode(['success' => true, 'new_status' => $new_status]);
+        } catch (Exception $e) {
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+    // --- End Modification ---
+    
+    $ajax_file = "ajax/{$page}.php";
+    if (file_exists($ajax_file)) {
+        include $ajax_file;
+    } else {
+        echo json_encode(['error' => 'Invalid request']);
+    }
     exit;
 }
+
+// Get user initials for avatar
+function getUserInitials($name) {
+    $words = explode(' ', $name);
+    $initials = '';
+    foreach ($words as $word) {
+        $initials .= strtoupper(substr($word, 0, 1));
+    }
+    return substr($initials, 0, 2);
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Accounting System - Professional Edition</title>
+    <meta name="description" content="Professional PHP Accounting Application">
+    <title><?php echo ucfirst($page); ?> - Accounting System</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
-<body>
-    <?php if (isset($_SESSION['user_id'])): ?>
-        <!-- Main App Navigation -->
-        <nav class="main-nav">
-            <div class="nav-wrapper">
-                <div class="nav-brand">
+<body class="<?php echo isset($_COOKIE['theme']) && $_COOKIE['theme'] === 'dark' ? 'dark-mode' : ''; ?>">
+
+<?php if ($page === 'login'): ?>
+    <div class="login-page">
+        <div class="login-container">
+            <?php include "pages/login.php"; ?>
+        </div>
+    </div>
+<?php else: ?>
+    <div class="app-layout">
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
                     <i class="fas fa-chart-line"></i>
-                    <span>Accounting Pro</span>
+                    <span>AccuBooks</span>
                 </div>
-                <ul class="nav-links">
-                    <li class="<?php echo $page === 'dashboard' ? 'active' : ''; ?>">
-                        <a href="index.php?page=dashboard">
-                            <i class="fas fa-home"></i>
-                            <span>Dashboard</span>
-                        </a>
-                    </li>
-                    <?php if ($_SESSION['is_admin']): ?>
-                    <li class="dropdown <?php echo strpos($page, 'setup') !== false ? 'active' : ''; ?>">
-                        <a href="#">
-                            <i class="fas fa-cogs"></i>
-                            <span>Setup</span>
-                            <i class="fas fa-chevron-down"></i>
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a href="index.php?page=setup_users"><i class="fas fa-users"></i> Users/Rights</a></li>
-                            <li><a href="index.php?page=setup_currency"><i class="fas fa-coins"></i> Currency</a></li>
-                            <li><a href="index.php?page=setup_holders"><i class="fas fa-id-card"></i> Account Holders</a></li>
-                        </ul>
-                    </li>
-                    <?php endif; ?>
-                    <li class="dropdown <?php echo in_array($page, ['accounts', 'categories']) ? 'active' : ''; ?>">
-                        <a href="#">
-                            <i class="fas fa-wallet"></i>
-                            <span>Accounts</span>
-                            <i class="fas fa-chevron-down"></i>
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a href="index.php?page=accounts"><i class="fas fa-bank"></i> Manage Accounts</a></li>
-                            <li><a href="index.php?page=categories"><i class="fas fa-tags"></i> Manage Categories</a></li>
-                        </ul>
-                    </li>
-                    <li class="<?php echo $page === 'transactions' ? 'active' : ''; ?>">
-                        <a href="index.php?page=transactions">
-                            <i class="fas fa-exchange-alt"></i>
-                            <span>Transactions</span>
-                        </a>
-                    </li>
-                    <li class="<?php echo in_array($page, ['reports', 'run_report']) ? 'active' : ''; ?>">
-                        <a href="index.php?page=reports">
-                            <i class="fas fa-chart-bar"></i>
-                            <span>Reports</span>
-                        </a>
-                    </li>
-                </ul>
-                <div class="nav-user">
-                    <div class="user-info">
-                        <i class="fas fa-user-circle"></i>
-                        <span><?php echo htmlspecialchars($_SESSION['username']); ?></span>
-                        <?php if ($_SESSION['is_admin']): ?>
-                            <span class="badge badge-admin">Admin</span>
-                        <?php endif; ?>
-                    </div>
-                    <button id="theme-toggle" class="btn-icon" title="Toggle theme">
-                        <i class="fas fa-moon" id="theme-icon"></i>
-                    </button>
-                    <a href="index.php?page=logout" class="btn btn-logout">
-                        <i class="fas fa-sign-out-alt"></i> Logout
-                    </a>
+            </div>
+            
+            <div class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <ul class="nav-menu">
+                        <li class="nav-item">
+                            <a href="index.php?page=dashboard" class="nav-link <?php echo $page === 'dashboard' ? 'active' : ''; ?>">
+                                <i class="fas fa-home"></i>
+                                <span>Dashboard</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=transactions" class="nav-link <?php echo $page === 'transactions' ? 'active' : ''; ?>">
+                                <i class="fas fa-exchange-alt"></i>
+                                <span>Transactions</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=accounts" class="nav-link <?php echo $page === 'accounts' ? 'active' : ''; ?>">
+                                <i class="fas fa-wallet"></i>
+                                <span>Accounts</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=categories" class="nav-link <?php echo $page === 'categories' ? 'active' : ''; ?>">
+                                <i class="fas fa-tags"></i>
+                                <span>Categories</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=reports" class="nav-link <?php echo $page === 'reports' ? 'active' : ''; ?>">
+                                <i class="fas fa-chart-bar"></i>
+                                <span>Reports</span>
+                            </a>
+                        </li>
+                    </ul>
                 </div>
+                
+                <?php if ($is_admin): ?>
+                <div class="nav-section">
+                    <div class="nav-section-title">Administration</div>
+                    <ul class="nav-menu">
+                        <li class="nav-item">
+                            <a href="index.php?page=users" class="nav-link <?php echo $page === 'users' ? 'active' : ''; ?>">
+                                <i class="fas fa-users"></i>
+                                <span>Users & Rights</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=currencies" class="nav-link <?php echo $page === 'currencies' ? 'active' : ''; ?>">
+                                <i class="fas fa-money-bill-wave"></i>
+                                <span>Currencies</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=holders" class="nav-link <?php echo $page === 'holders' ? 'active' : ''; ?>">
+                                <i class="fas fa-user-tie"></i>
+                                <span>Account Holders</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=audit" class="nav-link <?php echo $page === 'audit' ? 'active' : ''; ?>">
+                                <i class="fas fa-history"></i>
+                                <span>Audit Log</span>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="index.php?page=settings" class="nav-link <?php echo $page === 'settings' ? 'active' : ''; ?>">
+                                <i class="fas fa-cog"></i>
+                                <span>Settings</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                <?php endif; ?>
             </div>
         </nav>
-    <?php endif; ?>
-
-    <!-- Main Content Area -->
-    <main class="container">
-        <!-- Message/Error Display -->
-        <?php if ($message): ?>
-            <div class="alert alert-success animate-in">
-                <i class="fas fa-check-circle"></i>
-                <?php echo htmlspecialchars($message); ?>
-            </div>
-        <?php endif; ?>
         
-        <?php if ($error): ?>
-            <div class="alert alert-error animate-in">
-                <i class="fas fa-exclamation-circle"></i>
-                <?php echo htmlspecialchars($error); ?>
-            </div>
-        <?php endif; ?>
-
-        <?php
-        // Page Content Switch
-        $allowed_pages = [
-            'login',
-            'dashboard',
-            'setup_users',
-            'setup_currency',
-            'setup_holders',
-            'accounts',
-            'categories',
-            'transactions',
-            'reports',
-            'run_report'
-        ];
-
-        $page_file = "pages/{$page}.php";
-
-        if (in_array($page, $allowed_pages) && file_exists($page_file)) {
-            include $page_file;
-        } else {
-            echo '<div class="error-page">';
-            echo '<h2><i class="fas fa-exclamation-triangle"></i> 404 - Page Not Found</h2>';
-            echo '<p>The page you are looking for does not exist.</p>';
-            echo '<a href="index.php?page=dashboard" class="btn btn-primary">Go to Dashboard</a>';
-            echo '</div>';
-        }
-        ?>
-    </main>
-
-    <!-- Footer -->
-    <?php if (isset($_SESSION['user_id'])): ?>
-    <footer class="footer">
-        <div class="footer-content">
-            <p>&copy; 2025 Accounting Pro. All rights reserved.</p>
-            <p class="footer-info">
-                <i class="fas fa-server"></i> Version 1.0.0 | 
-                <i class="fas fa-clock"></i> <?php echo date('l, F j, Y g:i A'); ?>
-            </p>
-        </div>
-    </footer>
-    <?php endif; ?>
-
-    <!-- JavaScript -->
-    <script>
-        // Theme Switcher
-        const themeToggle = document.getElementById('theme-toggle');
-        const themeIcon = document.getElementById('theme-icon');
-        const body = document.body;
-        
-        // Load saved theme
-        const currentTheme = localStorage.getItem('theme') || 'light';
-        if (currentTheme === 'dark') {
-            body.classList.add('dark-mode');
-            themeIcon.classList.replace('fa-moon', 'fa-sun');
-        }
-
-        // Toggle theme
-        if (themeToggle) {
-            themeToggle.addEventListener('click', () => {
-                body.classList.toggle('dark-mode');
+        <div class="main-content">
+            <nav class="top-nav">
+                <div class="nav-left">
+                    <button class="menu-toggle" id="menuToggle">
+                        <i class="fas fa-bars"></i>
+                    </button>
+                    
+                    <div class="search-bar">
+                        <i class="fas fa-search search-icon"></i>
+                        <input type="text" class="search-input" placeholder="Search transactions, accounts...">
+                    </div>
+                </div>
                 
-                if (body.classList.contains('dark-mode')) {
-                    localStorage.setItem('theme', 'dark');
-                    themeIcon.classList.replace('fa-moon', 'fa-sun');
+                <div class="nav-right">
+                    <button class="btn-icon">
+                        <i class="fas fa-bell"></i>
+                    </button>
+                    
+                    <button class="theme-toggle" id="themeToggle">
+                        <i class="fas fa-sun sun-icon"></i>
+                        <i class="fas fa-moon moon-icon"></i>
+                    </button>
+                    
+                    <div class="nav-user">
+                        <div class="user-info">
+                            <span class="user-name"><?php echo clean($current_user['full_name'] ?? $current_user['username']); ?></span>
+                            <span class="user-role"><?php echo $is_admin ? 'Administrator' : 'User'; ?></span>
+                        </div>
+                        <div class="user-avatar">
+                            <?php echo getUserInitials($current_user['full_name'] ?? $current_user['username']); ?>
+                        </div>
+                        <div class="dropdown">
+                            <button class="btn-icon">
+                                <i class="fas fa-chevron-down"></i>
+                            </button>
+                            <div class="dropdown-menu">
+                                <a href="index.php?page=profile" class="dropdown-item">
+                                    <i class="fas fa-user"></i> Profile
+                                </a>
+                                <a href="index.php?page=settings" class="dropdown-item">
+                                    <i class="fas fa-cog"></i> Settings
+                                </a>
+                                <hr class="dropdown-divider">
+                                <a href="index.php?page=logout" class="dropdown-item text-danger">
+                                    <i class="fas fa-sign-out-alt"></i> Logout
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+            
+            <div class="content">
+                <?php if ($error): ?>
+                <div class="alert alert-danger">
+                    <i class="fas fa-exclamation-circle alert-icon"></i>
+                    <div class="alert-content">
+                        <div class="alert-message"><?php echo $error; ?></div>
+                    </div>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($success): ?>
+                <div class="alert alert-success">
+                    <i class="fas fa-check-circle alert-icon"></i>
+                    <div class="alert-content">
+                        <div class="alert-message"><?php echo $success; ?></div>
+                    </div>
+                </div>
+                <?php endif; ?>
+                
+                <?php if ($message): ?>
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle alert-icon"></i>
+                    <div class="alert-content">
+                        <div class="alert-message"><?php echo $message; ?></div>
+                    </div>
+                </div>
+                <?php endif; ?>
+                
+                <?php
+                $page_file = "pages/{$page}.php";
+                if (file_exists($page_file)) {
+                    include $page_file;
                 } else {
-                    localStorage.setItem('theme', 'light');
-                    themeIcon.classList.replace('fa-sun', 'fa-moon');
+                    include "pages/404.php";
                 }
-            });
-        }
+                ?>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
 
-        // Auto-hide alerts
-        setTimeout(() => {
-            document.querySelectorAll('.alert').forEach(alert => {
-                alert.style.animation = 'slideOut 0.3s ease forwards';
-                setTimeout(() => alert.remove(), 300);
-            });
-        }, 5000);
-    </script>
+<script>
+// Theme Toggle
+document.getElementById('themeToggle')?.addEventListener('click', function() {
+    document.body.classList.toggle('dark-mode');
+    const isDarkMode = document.body.classList.contains('dark-mode');
+    document.cookie = `theme=${isDarkMode ? 'dark' : 'light'};path=/;max-age=31536000`;
+});
+
+// Mobile Menu Toggle
+document.getElementById('menuToggle')?.addEventListener('click', function() {
+    document.getElementById('sidebar').classList.toggle('active');
+});
+
+// Close sidebar when clicking outside on mobile
+document.addEventListener('click', function(event) {
+    const sidebar = document.getElementById('sidebar');
+    const menuToggle = document.getElementById('menuToggle');
+    
+    if (window.innerWidth <= 1024 && 
+        sidebar && menuToggle &&
+        !sidebar.contains(event.target) && 
+        !menuToggle.contains(event.target) &&
+        sidebar.classList.contains('active')) {
+        sidebar.classList.remove('active');
+    }
+});
+
+// Auto-hide alerts after 5 seconds
+setTimeout(function() {
+    const alerts = document.querySelectorAll('.alert');
+    alerts.forEach(function(alert) {
+        alert.style.opacity = '0';
+        setTimeout(function() {
+            alert.remove();
+        }, 300);
+    });
+}, 5000);
+
+// Add active class to current page in navigation
+document.addEventListener('DOMContentLoaded', function() {
+    const currentPage = '<?php echo $page; ?>';
+    const navLinks = document.querySelectorAll('.nav-link');
+    
+    navLinks.forEach(function(link) {
+        if (link.href.includes('page=' + currentPage)) {
+            link.classList.add('active');
+        }
+    });
+});
+</script>
+
 </body>
 </html>
