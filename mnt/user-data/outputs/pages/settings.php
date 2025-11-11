@@ -162,18 +162,19 @@ global $db_config;
                 </div>
             </div>
         </div>
+        
 
         <div id="backup" class="card mb-3">
-            <div class="card-header">
-                <h3 class="card-title">Backup & Restore (Admin)</h3>
-            </div>
-            <div class="card-body">
-                <p class="text-muted">Create a backup of your database.</p>
-                <button class="btn btn-secondary">
-                    <i class="fas fa-download"></i> Download SQL Backup
-                </button>
-            </div>
-        </div>
+    <div class="card-header">
+        <h3 class="card-title">Backup & Restore (Admin)</h3>
+    </div>
+    <div class="card-body">
+        <p class="text-muted">Create a backup of your database. This will download a .sql file of the entire database.</p>
+        <a href="backup.php" class="btn btn-secondary">
+            <i class="fas fa-download"></i> Download SQL Backup
+        </a>
+    </div>
+</div> 
         <?php endif; ?>
     </div>
 </div>
