@@ -1,8 +1,16 @@
 <?php
-// backup.php - Database Backup Handler
+/**
+ * Database Backup Handler
+ *
+ * This script uses mysqldump to create a database backup and force-downloads it.
+ */
+
+// Start session (required for auth functions)
+session_start();
+
 // Include core files
-require_once 'db_connect.php';
-require_once 'functions.php';
+require_once 'db_connect.php'; // Provides $db_config
+require_once 'functions.php'; // Provides requireAdmin()
 
 // --- Security Check ---
 // Only logged-in admins can run this
@@ -20,10 +28,12 @@ $db_port = $db_config['port']; // Get port from config
 $filename = "accounting_backup_" . date("Y-m-d_H-i-s") . ".sql";
 
 // Set headers to force download
-header('Content-Type: application/sql');
+header('Content-Description: File Transfer');
+header('Content-Type: application/octet-stream');
 header('Content-Disposition: attachment; filename="' . $filename . '"');
-header('Pragma: no-cache');
 header('Expires: 0');
+header('Cache-Control: must-revalidate');
+header('Pragma: public');
 
 // --- Create the mysqldump command ---
 // This command securely passes the password and includes table structures and data.
@@ -42,12 +52,10 @@ $command = sprintf(
 // This avoids loading the entire SQL file into server memory
 passthru($command, $return_var);
 
-// Optional: Check for errors (if $return_var is not 0)
+// Optional: Check for errors
 if ($return_var !== 0) {
     // If you get an error, it's often due to mysqldump not being in the server's PATH
-    // or permissions issues.
     error_log("mysqldump command failed with return code: $return_var");
-    // You can't send a file AND an error, but you can log it for debugging.
 }
 
 exit;
